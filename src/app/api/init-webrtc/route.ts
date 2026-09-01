@@ -1,10 +1,8 @@
+import { InferenceHTTPClient } from "@roboflow/inference-sdk";
 import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const ROBOFLOW_WEBRTC_URL =
-  "https://serverless.roboflow.com/initialise_webrtc_worker";
 
 export async function POST(request: NextRequest) {
   try {
@@ -12,90 +10,70 @@ export async function POST(request: NextRequest) {
 
     if (!apiKey) {
       return NextResponse.json(
-        { error: "ROBOFLOW_API_KEY não configurada no servidor." },
+        { error: "ROBOFLOW_API_KEY não configurada na Vercel." },
         { status: 500 }
       );
     }
 
-    const body = await request.json();
-    const { offer, wrtcparams } = body;
+    const { offer, wrtcParams } = await request.json();
 
-    if (!offer?.sdp || !offer?.type || !wrtcparams) {
+    if (!offer?.sdp || !offer?.type) {
       return NextResponse.json(
-        { error: "Oferta WebRTC ou configuração inválida." },
+        { error: "Oferta WebRTC inválida ou ausente." },
         { status: 400 }
       );
     }
 
-    const upstreamResponse = await fetch(ROBOFLOW_WEBRTC_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        webrtc_offer: {
-          sdp: offer.sdp,
-          type: offer.type,
-        },
-        workflow_configuration: {
-          type: "WorkflowConfiguration",
-          workspace_name: wrtcparams.workspaceName,
-          workflow_id: wrtcparams.workflowId,
-          image_input_name: wrtcparams.imageInputName ?? "image",
-          workflows_parameters: wrtcparams.workflowParameters ?? {},
-          disable_sinks: false,
-          workflows_thread_pool_workers: 4,
-          cancel_thread_pool_tasks_on_exit: true,
-          video_metadata_input_name: "video_metadata",
-        },
-        is_preview: false,
-        webrtc_realtime_processing: true,
-        stream_output: wrtcparams.streamOutputNames ?? ["output_image"],
-        data_output: wrtcparams.dataOutputNames ?? [
-          "predictions",
-          "tracked_predictions",
-          "object_count"
-        ],
-        processing_timeout: wrtcparams.processingTimeout ?? 3600,
-        requested_plan: wrtcparams.requestedPlan ?? "webrtc-gpu-medium",
-        requested_region: wrtcparams.requestedRegion ?? "us",
-      }),
-    });
-
-    const responseText = await upstreamResponse.text();
-
-    let responseBody: unknown;
-
-    try {
-      responseBody = JSON.parse(responseText);
-    } catch {
-      responseBody = {
-        error: "Resposta inválida recebida do serviço de inferência.",
-      };
-    }
-
-    if (!upstreamResponse.ok) {
-      console.error("Erro WebRTC da Roboflow:", responseBody);
-
+    if (!wrtcParams?.workspaceName || !wrtcParams?.workflowId) {
       return NextResponse.json(
-        responseBody,
-        { status: upstreamResponse.status }
+        { error: "Configuração do Workflow inválida ou ausente." },
+        { status: 400 }
       );
     }
 
-    return NextResponse.json(responseBody);
-  } catch (error) {
-    console.error("Erro ao iniciar WebRTC:", error);
+    const client = InferenceHTTPClient.init({
+      apiKey,
+      serverUrl: "https://serverless.roboflow.com",
+    });
 
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Não foi possível iniciar o processamento.",
+    const answer = await client.initializeWebrtcWorker({
+      offer,
+      workspaceName: wrtcParams.workspaceName,
+      workflowId: wrtcParams.workflowId,
+      config: {
+        imageInputName: wrtcParams.imageInputName ?? "image",
+        streamOutputNames:
+          wrtcParams.streamOutputNames ?? ["output_image"],
+        dataOutputNames:
+          wrtcParams.dataOutputNames ?? [
+            "predictions",
+            "tracked_predictions",
+            "object_count",
+          ],
+        threadPoolWorkers: wrtcParams.threadPoolWorkers ?? 4,
+        workflowsParameters: wrtcParams.workflowsParameters ?? {},
+        iceServers: wrtcParams.iceServers,
+        processingTimeout: wrtcParams.processingTimeout ?? 3600,
+        requestedPlan:
+          wrtcParams.requestedPlan ?? "webrtc-gpu-medium",
+        requestedRegion: wrtcParams.requestedRegion ?? "us",
+        realtimeProcessing: wrtcParams.realtimeProcessing ?? true,
       },
-      { status: 500 }
-    );
+    });
+
+    return NextResponse.json(answer, {
+      headers: {
+        "Cache-Control": "no-store",
+      },
+    });
+  } catch (error) {
+    console.error("Falha ao inicializar WebRTC:", error);
+
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Falha inesperada ao iniciar WebRTC.";
+
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
